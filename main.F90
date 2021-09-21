@@ -10,9 +10,9 @@ program main
    
    use netcdf
    
+   ! Load Aerobulk from Laurent Brodeau
+   ! https://github.com/brodeau/aerobulk
    use mod_aerobulk
-   !use mod_const
-   !use mod_phymbl, ONLY: Theta_from_z_P0_T_q
    
    implicit none
    
@@ -85,6 +85,7 @@ program main
    real(kind=dp), allocatable, dimension(:,:) :: Tau_x
    real(kind=dp), allocatable, dimension(:,:) :: Tau_y
    real(kind=dp), allocatable, dimension(:,:) :: Evap
+   real(kind=dp), allocatable, dimension(:,:) :: mask
    
    character(len=200) :: indir, outdir, indir_lores
    
@@ -92,6 +93,7 @@ program main
    character(len=10), parameter :: y_name = "lat"
    character(len=10), parameter :: t_name = "time"
    character(len=200) :: outfile
+   character(len=50)  :: start_date, time_units
    
    logical :: lhires = .true.
    logical :: llores = .true.
@@ -100,6 +102,10 @@ program main
    indir_lores = "/Users/joakimkjellsson/Downloads/highresmip/hadgem-hh/1day/crs_N48/"
    
    if (lhires) then
+      
+      year = 1950
+      month = 1
+      day = 1
       
       print*," --- STARTING high-res calculations --- "
       
@@ -119,7 +125,8 @@ program main
                  Qh     (nx_hires, ny_hires), &
                  Tau_x  (nx_hires, ny_hires), &
                  Tau_y  (nx_hires, ny_hires), &
-                 Evap   (nx_hires, ny_hires) )
+                 Evap   (nx_hires, ny_hires), &
+                 mask   (nx_hires, ny_hires) )
       
       
       print*," --- OPENING output file --- "
@@ -134,8 +141,16 @@ program main
       call check( nf90_def_var( ncid, y_name, nf90_real, y_dimid, lat_varid ) )
       call check( nf90_def_var( ncid, t_name, nf90_real, t_dimid, time_varid ) )
       
+      write(start_date,"(I0.4,A1,I0.2,A1,I0.2)") year,"-",month,"-",day
+      time_units = "days since "//trim(start_date)
+      print*,time_units
       call check( nf90_put_att(ncid, lon_varid, "units", "degrees_east" ) )
       call check( nf90_put_att(ncid, lat_varid, "units", "degrees_north" ) )
+      call check( nf90_put_att(ncid, time_varid, "units", trim(time_units) ) )
+      call check( nf90_put_att(ncid, time_varid, "calendar", "360_day" ) )
+      call check( nf90_put_att(ncid, lon_varid, "standard_name", "longitude" ) )
+      call check( nf90_put_att(ncid, lat_varid, "standard_name", "latitude" ) )
+      call check( nf90_put_att(ncid, time_varid, "standard_name", "time" ) )
       
       dimids = (/ x_dimid, y_dimid, t_dimid /)
       
@@ -147,16 +162,17 @@ program main
       
       call check( nf90_put_att( ncid, qe_varid,   "units", "W/m2" ) )
       call check( nf90_put_att( ncid, qh_varid,   "units", "W/m2" ) )
-      call check( nf90_put_att( ncid, taux_varid, "units", "m/s" ) )
-      call check( nf90_put_att( ncid, tauy_varid, "units", "m/s" ) )
-      call check( nf90_put_att( ncid, evap_varid, "units", "kg/m2/s" ) )
+      call check( nf90_put_att( ncid, taux_varid, "units", "N/m2" ) )
+      call check( nf90_put_att( ncid, tauy_varid, "units", "N/m2" ) )
+      call check( nf90_put_att( ncid, evap_varid, "units", "mm/s" ) )
+      
+      call check( nf90_put_att( ncid, qe_varid,   "standard_name", "surface_upward_latent_heat_flux" ) )
+      call check( nf90_put_att( ncid, qh_varid,   "standard_name", "surface_upward_sensible_heat_flux" ) )
+      call check( nf90_put_att( ncid, taux_varid, "standard_name", "surface_downward_eastward_stress" ) )
+      call check( nf90_put_att( ncid, tauy_varid, "standard_name", "surface_downward_northward_stress" ) )
+      call check( nf90_put_att( ncid, evap_varid, "standard_name", "evaporation" ) )
       
       call check( nf90_enddef(ncid) )
-      
-      
-      year = 1950
-      month = 1
-      day = 1
       
       do jt = 1, nt_hires
          
@@ -172,7 +188,6 @@ program main
             call check( nf90_put_var( ncid, lat_varid, lat_hires ) )
             
          end if
-         
          
          print*," --- CALL AEROBULK for high-res data, step = ",jt," -- "
          ! jt = current time step
@@ -204,6 +219,19 @@ program main
          ! tau_y = meridional wind str
          ! evap = evaporation 
          
+         ! find land-sea mask using sst
+         where (sst > 333.0 .OR. sst < 263.0)  
+            mask = 0.0
+         elsewhere
+            mask = 1.0
+         end where
+         
+         Qe(:,:) = Qe(:,:) * mask(:,:)
+         Qh(:,:) = Qh(:,:) * mask(:,:)
+         Tau_x(:,:) = Tau_x(:,:) * mask(:,:)
+         Tau_y(:,:) = Tau_y(:,:) * mask(:,:)
+         Evap(:,:) = Evap(:,:) * mask(:,:)
+         
          count = (/ nx_hires, ny_hires, 1 /)
          start = (/        1,        1, 1 /)
          start(3) = irec
@@ -223,7 +251,7 @@ program main
       
       deallocate ( Qe_hires ,Qh_hires, Tau_x_hires, Tau_y_hires, Evap_hires )
      
-      deallocate ( sst, t_zt, hum_zt, U_zu, V_zu, SLP, Qe, Qh, Tau_x, Tau_y, Evap )
+      deallocate ( sst, t_zt, hum_zt, U_zu, V_zu, SLP, Qe, Qh, Tau_x, Tau_y, Evap, mask )
       
       print*," --- SUCCESS for high-res data --- "
       
@@ -250,7 +278,8 @@ program main
                  Qh     (nx_lores, ny_lores), &
                  Tau_x  (nx_lores, ny_lores), &
                  Tau_y  (nx_lores, ny_lores), &
-                 Evap   (nx_lores, ny_lores) )
+                 Evap   (nx_lores, ny_lores), &
+                 mask   (nx_lores, ny_lores) )
       
       
       print*," --- OPENING output file --- "
@@ -265,8 +294,16 @@ program main
       call check( nf90_def_var( ncid, y_name, nf90_real, y_dimid, lat_varid ) )
       call check( nf90_def_var( ncid, t_name, nf90_real, t_dimid, time_varid ) )
       
+      write(start_date,"(I0.4,A1,I0.2,A1,I0.2)") year,"-",month,"-",day
+      time_units = "days since "//trim(start_date)
+      print*,time_units
       call check( nf90_put_att(ncid, lon_varid, "units", "degrees_east" ) )
       call check( nf90_put_att(ncid, lat_varid, "units", "degrees_north" ) )
+      call check( nf90_put_att(ncid, time_varid, "units", time_units ) )
+      call check( nf90_put_att(ncid, time_varid, "calendar", "360_day" ) )
+      call check( nf90_put_att(ncid, lon_varid, "standard_name", "longitude" ) )
+      call check( nf90_put_att(ncid, lat_varid, "standard_name", "latitude" ) )
+      call check( nf90_put_att(ncid, time_varid, "standard_name", "time" ) )
       
       dimids = (/ x_dimid, y_dimid, t_dimid /)
       
@@ -278,9 +315,15 @@ program main
       
       call check( nf90_put_att( ncid, qe_varid,   "units", "W/m2" ) )
       call check( nf90_put_att( ncid, qh_varid,   "units", "W/m2" ) )
-      call check( nf90_put_att( ncid, taux_varid, "units", "m/s" ) )
-      call check( nf90_put_att( ncid, tauy_varid, "units", "m/s" ) )
-      call check( nf90_put_att( ncid, evap_varid, "units", "kg/m2/s" ) )
+      call check( nf90_put_att( ncid, taux_varid, "units", "N/m2" ) )
+      call check( nf90_put_att( ncid, tauy_varid, "units", "N/m2" ) )
+      call check( nf90_put_att( ncid, evap_varid, "units", "mm/s" ) )
+      
+      call check( nf90_put_att( ncid, qe_varid,   "standard_name", "surface_upward_latent_heat_flux" ) )
+      call check( nf90_put_att( ncid, qh_varid,   "standard_name", "surface_upward_sensible_heat_flux" ) )
+      call check( nf90_put_att( ncid, taux_varid, "standard_name", "surface_downward_eastward_stress" ) )
+      call check( nf90_put_att( ncid, tauy_varid, "standard_name", "surface_downward_northward_stress" ) )
+      call check( nf90_put_att( ncid, evap_varid, "standard_name", "evaporation" ) )
       
       call check( nf90_enddef(ncid) )
       
@@ -333,6 +376,19 @@ program main
          ! tau_y = meridional wind str
          ! evap = evaporation 
          
+         ! find land-sea mask using sst
+         where (sst > 333.0 .OR. sst < 263.0)  
+            mask = 0.0
+         elsewhere
+            mask = 1.0
+         end where
+         
+         Qe(:,:) = Qe(:,:) * mask(:,:)
+         Qh(:,:) = Qh(:,:) * mask(:,:)
+         Tau_x(:,:) = Tau_x(:,:) * mask(:,:)
+         Tau_y(:,:) = Tau_y(:,:) * mask(:,:)
+         Evap(:,:) = Evap(:,:) * mask(:,:)
+         
          print*," --- WRITE low-res data --- "
          irec = jt
          count = (/ nx_lores, ny_lores, 1 /)
@@ -351,7 +407,7 @@ program main
       
       deallocate ( Qe_lores ,Qh_lores, Tau_x_lores, Tau_y_lores, Evap_lores )
      
-      deallocate ( sst, t_zt, hum_zt, U_zu, V_zu, SLP, Qe, Qh, Tau_x, Tau_y, Evap )
+      deallocate ( sst, t_zt, hum_zt, U_zu, V_zu, SLP, Qe, Qh, Tau_x, Tau_y, Evap, mask )
       
       print*," --- SUCCESS for low-res data --- "
    
